@@ -2,7 +2,8 @@ import random
 
 import gradio as gr
 import torch
-from diffusers import StableDiffusionXLPipeline
+from diffusers import StableDiffusionXLPipeline, StableDiffusionXLImg2ImgPipeline
+from diffusers.utils import load_image, make_image_grid
 
 from scheduling_tcd import TCDScheduler
 from utils import save_image_with_geninfo, crc_hash, parse_params_from_image, str2num
@@ -39,7 +40,7 @@ device = "mps"
 base_model_id = "stabilityai/stable-diffusion-xl-base-1.0"
 tcd_lora_id = "h1t/TCD-SDXL-LoRA"
 
-pipe = StableDiffusionXLPipeline.from_pretrained(
+pipe = StableDiffusionXLImg2ImgPipeline.from_pretrained(
     base_model_id,
     torch_dtype=torch.float16,
     variant="fp16"
@@ -63,7 +64,8 @@ pipe.fuse_lora()
 def newSeed() -> int:
     return int(random.randrange(4294967294))
 
-def inference(prompt, negative_prompt="", steps=4, seed=-1, eta=0.3, cfg=0) -> (Image.Image, str):
+def inference_img2img(prompt, negative_prompt="", steps=4, seed=-1, eta=0.3, cfg=0, init_image=None, strength=0.5) -> (Image.Image, str):
+    init_image = load_image(init_image)
     if seed is None or seed == '' or seed == -1:
         seed = newSeed()
     print(f"prompt: {prompt}; negative: {negative_prompt}")
@@ -78,9 +80,11 @@ def inference(prompt, negative_prompt="", steps=4, seed=-1, eta=0.3, cfg=0) -> (
         generator=generator,
         height=1024,
         # width=768,
+        image=init_image,
+        strength=strength
     ).images[0]
-    d = {"seed": seed, "steps": steps, "eta": eta, "cfg": cfg, "prompt": prompt, "negative_prompt": negative_prompt}
-    path = f"outputs/TCD_seed-{seed}_steps-{steps}_{crc_hash(repr(d))}.{output_format}"
+    d = {"seed": seed, "steps": steps, "eta": eta, "cfg": cfg, "prompt": prompt, "negative_prompt": negative_prompt, "img2img": {"strength": strength}} # "init_image": init_image}}
+    path = f"outputs/iTCD_seed-{seed}_steps-{steps}_{crc_hash(repr(d))}.{output_format}"
     save_image_with_geninfo(image, str(d), path )
     return image, f"seed: {seed}"
     
@@ -125,6 +129,16 @@ with gr.Blocks(css=css) as demo:
     gr.Markdown(f'# {title}\n### {description}')
     
     with gr.Row():
+        with gr.Column():
+            inputImage = gr.Image(label='Input Image', sources=['upload','clipboard'], interactive=True, type="filepath")
+            strength = gr.Slider(
+                label='Img2Img Strength',
+                minimum=0,
+                maximum=1,
+                value=0.5,
+                step=0.01,
+            )
+
         with gr.Column():
             prompt = gr.Textbox(label='Prompt', value=default_prompt)
             negative_prompt = gr.Textbox(label='Negative Prompt', value=default_prompt)
@@ -181,8 +195,8 @@ with gr.Blocks(css=css) as demo:
     gr.Markdown(f'{article}')
 
     submit.click(
-        fn=inference,
-        inputs=[prompt, negative_prompt, steps, seed, eta, cfg],
+        fn=inference_img2img,
+        inputs=[prompt, negative_prompt, steps, seed, eta, cfg, inputImage, strength],
         outputs=[genImage, seedTxt],
     )
 
