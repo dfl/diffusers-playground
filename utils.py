@@ -4,6 +4,7 @@ from PIL import Image, PngImagePlugin
 import piexif
 import piexif.helper
 import ast
+import re
 
 def crc_hash(string: str) -> str:  # 8 characters
     crc = zlib.crc32(string.encode())
@@ -111,3 +112,15 @@ def read_info_from_image(image: Image.Image) -> tuple[str | None, dict]:
         geninfo = items["comment"].decode('utf8', errors="ignore")
 
     return geninfo, items
+
+def str2num(string) -> Union[int, None]:
+    # find a number at the end of a string, optionally enclosed in parentheses
+    num_match = re.search(r'(?i)(-?0x[0-9a-f]+|-?\d+)\)?$', string)
+    if num_match:
+        num_str = num_match.group().strip("()")
+        if num_str.startswith("0x") or num_str.startswith("-0x"):
+            return int(num_str, 16)  # Convert hexadecimal string to integer
+        else:
+            return int(num_str)  # Convert decimal string to integer
+    else:
+        return None

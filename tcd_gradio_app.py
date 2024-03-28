@@ -5,7 +5,8 @@ import torch
 from diffusers import StableDiffusionXLPipeline
 
 from scheduling_tcd import TCDScheduler
-from utils import save_image_with_geninfo, crc_hash, parse_params_from_image
+from utils import save_image_with_geninfo, crc_hash, parse_params_from_image, str2num
+from PIL import Image
 
 import os
 os.environ["CUBLAS_WORKSPACE_CONFIG"] = ":16:8"
@@ -22,6 +23,15 @@ h1 {
 h3 {
     text-align: center;
     display:block;
+}
+
+button.tool {
+    max-width: 2.2em;
+    min-width: 2.2em !important;
+    height: 2.4em;
+    align-self: end;
+    line-height: 1em;
+    border-radius: 0.5em;
 }
 """
 
@@ -50,7 +60,10 @@ pipe.fuse_lora()
 # pipe.scheduler.forward = debug_forward
 
 
-def inference(prompt, negative_prompt="", steps=4, seed=-1, eta=0.3, cfg=0):
+def newSeed() -> int:
+    return int(random.randrange(4294967294))
+
+def inference(prompt, negative_prompt="", steps=4, seed=-1, eta=0.3, cfg=0) -> (Image.Image, str):
     if seed is None or seed == '' or seed == -1:
         seed = int(random.randrange(4294967294))
     print(f"prompt: {prompt}; negative: {negative_prompt}")
@@ -69,8 +82,8 @@ def inference(prompt, negative_prompt="", steps=4, seed=-1, eta=0.3, cfg=0):
     d = {"seed": seed, "steps": steps, "eta": eta, "cfg": cfg, "prompt": prompt, "negative_prompt": negative_prompt}
     path = f"outputs/TCD_seed-{seed}_steps-{steps}_{crc_hash(repr(d))}.{output_format}"
     save_image_with_geninfo(image, str(d), path )
-    return image
-
+    return image, f"seed: {seed}"
+    
 
 # Define style
 title = "<h1>Trajectory Consistency Distillation</h1>"
@@ -124,10 +137,15 @@ with gr.Blocks(css=css) as demo:
             )
             
             # with gr.Accordion("Advanced Options", open=True):
-            with gr.Row():
-                with gr.Column():
+            with gr.Column():
+                with gr.Row():
                     seed = gr.Number(label="Random Seed", value=-1)
-                with gr.Column():
+                    luckyButton = gr.Button(value="🍀", elem_classes="tool") #tooltip="Generate new random seed", 
+                    randButton = gr.Button(value="🎲", elem_classes="tool") # tooltip="Set seed to -1, which will cause a new random number to be used every time", 
+                    recycleButton = gr.Button(value="♻️", elem_classes="tool") # tooltip="Reuse seed from last generation", 
+
+            with gr.Column():
+                with gr.Row():
                     eta = gr.Slider(
                             label='Gamma',
                             minimum=0.,
@@ -135,7 +153,6 @@ with gr.Blocks(css=css) as demo:
                             value=0.3,
                             step=0.1,
                         )
-                with gr.Column():
                     cfg = gr.Slider(
                             label='Guidance Scale (CFG)',
                             minimum=1,
@@ -159,14 +176,19 @@ with gr.Blocks(css=css) as demo:
 
         with gr.Column():
             genImage = gr.Image(label='Generated Image', sources=['upload','clipboard'], interactive=True, type="filepath")
+            seedTxt = gr.Markdown(label='Output Seed')
 
     gr.Markdown(f'{article}')
 
     submit.click(
         fn=inference,
         inputs=[prompt, negative_prompt, steps, seed, eta, cfg],
-        outputs=[genImage],
+        outputs=[genImage, seedTxt],
     )
+
+    randButton.click(fn=lambda: gr.Number(label="Random Seed", value=-1), show_progress=False, outputs=[seed])
+    luckyButton.click(fn=lambda: gr.Number(label="Random Seed", value=newSeed()), show_progress=False, outputs=[seed])
+    recycleButton.click(fn=lambda seedTxt: gr.Number(label="Random Seed", value=str2num(seedTxt)), show_progress=False, inputs=[seedTxt], outputs=[seed])
 
     genImage.upload(
         fn=get_params_from_image,
