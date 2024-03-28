@@ -12,6 +12,8 @@ os.environ["CUBLAS_WORKSPACE_CONFIG"] = ":16:8"
 torch.backends.cudnn.benchmark = False
 torch.use_deterministic_algorithms(True)
 
+output_format = "jpg" #png"
+
 css = """
 h1 {
     text-align: center;
@@ -65,7 +67,7 @@ def inference(prompt, negative_prompt="", steps=4, seed=-1, eta=0.3, cfg=0):
         # width=768,
     ).images[0]
     d = {"seed": seed, "steps": steps, "eta": eta, "cfg": cfg, "prompt": prompt, "negative_prompt": negative_prompt}
-    path = f"outputs/TCD_seed-{seed}_steps-{steps}_{crc_hash(repr(d))}.png"
+    path = f"outputs/TCD_seed-{seed}_steps-{steps}_{crc_hash(repr(d))}.{output_format}"
     save_image_with_geninfo(image, str(d), path )
     return image
 
