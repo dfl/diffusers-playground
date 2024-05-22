@@ -2,8 +2,8 @@ import random
 
 import gradio as gr
 import torch
-from diffusers import StableDiffusionXLPipeline, StableDiffusionXLImg2ImgPipeline
-from diffusers.utils import load_image, make_image_grid
+from diffusers import StableDiffusionPipeline
+from compel import Compel
 
 from scheduling_tcd import TCDScheduler
 from utils import save_image_with_geninfo, crc_hash, parse_params_from_image, str2num
@@ -37,10 +37,11 @@ button.tool {
 """
 
 device = "mps"
-base_model_id = "stabilityai/stable-diffusion-xl-base-1.0"
-tcd_lora_id = "h1t/TCD-SDXL-LoRA"
+base_model_id = "stabilityai/stable-diffusion-2-1-base"
+# base_model_id = "stabilityai/stable-diffusion-2-1" # 768
+tcd_lora_id = "h1t/TCD-SD21-base-LoRA"
 
-pipe = StableDiffusionXLImg2ImgPipeline.from_pretrained(
+pipe = StableDiffusionPipeline.from_pretrained(
     base_model_id,
     torch_dtype=torch.float16,
     variant="fp16"
@@ -50,37 +51,49 @@ pipe.scheduler = TCDScheduler.from_config(pipe.scheduler.config)
 pipe.load_lora_weights(tcd_lora_id)
 pipe.fuse_lora()
 
+compel_proc = Compel(tokenizer=pipe.tokenizer, text_encoder=pipe.text_encoder)
+
+# original_forward = pipe.scheduler.forward
+
+# def debug_forward(*args, **kwargs):
+#     result = original_forward(*args, **kwargs)
+#     if hasattr(result, "sigmas") and result.sigmas is not None:
+#         print("Sigmas array:", result.sigmas)
+#     return result
+
+# pipe.scheduler.forward = debug_forward
+
+
 def newSeed() -> int:
     return int(random.randrange(4294967294))
 
-# The strength and num_inference_steps parameters are related because strength determines the number of noise steps to add. For example, if the num_inference_steps is 50 and strength is 0.8, then this means adding 40 (50 * 0.8) steps of noise to the initial image and then denoising for 40 steps to get the newly generated image.
-def inference_img2img(prompt, negative_prompt="", steps=4, seed=-1, eta=0.3, cfg=0, init_image=None, strength=0.5) -> (Image.Image, str):
-    init_image = load_image(init_image)
+def inference(prompt, negative_prompt="", steps=4, seed=-1, eta=0.3, cfg=0, width=512, height=512) -> (Image.Image, str):
     if seed is None or seed == '' or seed == -1:
         seed = newSeed()
     print(f"prompt: {prompt}; negative: {negative_prompt}")
     print(f"seed: {seed}; steps: {steps}; eta: {eta}")
     generator = torch.Generator(device=device).manual_seed(int(seed))
+
+    prompt_embeds = compel_proc(prompt)
+    negative_prompt_embeds = compel_proc(negative_prompt)
     image = pipe(
-        prompt=prompt,
-        negative_prompt=negative_prompt,
+        prompt_embeds=prompt_embeds,
+        negative_prompt_embeds=negative_prompt_embeds,
         num_inference_steps=steps,
         guidance_scale=cfg,
         eta=eta,
         generator=generator,
-        height=1024,
-        # width=768,
-        image=init_image,
-        strength=strength
+        height=height,
+        width=width,
     ).images[0]
-    d = {"seed": seed, "steps": steps, "eta": eta, "cfg": cfg, "prompt": prompt, "negative_prompt": negative_prompt, "img2img": {"strength": strength}} # "init_image": init_image}}
-    path = f"outputs/iTCD_seed-{seed}_steps-{steps}_{crc_hash(repr(d))}.{output_format}"
+    d = {"seed": seed, "steps": steps, "eta": eta, "cfg": cfg, "prompt": prompt, "negative_prompt": negative_prompt, "dimensions": f"{width} x {height}", "model": base_model_id}
+    path = f"outputs/TCD_seed-{seed}_steps-{steps}_{crc_hash(repr(d))}.{output_format}"
     save_image_with_geninfo(image, str(d), path )
     return image, f"seed: {seed}"
     
 
 # Define style
-title = "<h1>Trajectory Consistency Distillation</h1>"
+title = "<h1>Trajectory Consistency Distillation (SD 2.1)</h1>"
 description = "<h3>Unofficial Gradio demo for Trajectory Consistency Distillation</h3>"
 article = "<p style='text-align: center'><a href='https://arxiv.org/abs/' target='_blank'>Trajectory Consistency Distillation</a> | <a href='https://github.com/jabir-zheng/TCD' target='_blank'>Github Repo</a></p>"
 
@@ -120,16 +133,6 @@ with gr.Blocks(css=css) as demo:
     
     with gr.Row():
         with gr.Column():
-            inputImage = gr.Image(label='Input Image', sources=['upload','clipboard'], interactive=True, type="filepath")
-            strength = gr.Slider(
-                label='Img2Img Strength',
-                minimum=0,
-                maximum=1,
-                value=0.5,
-                step=0.01,
-            )
-
-        with gr.Column():
             prompt = gr.Textbox(label='Prompt', value=default_prompt)
             negative_prompt = gr.Textbox(label='Negative Prompt', value=default_prompt)
             steps = gr.Slider(
@@ -164,7 +167,21 @@ with gr.Blocks(css=css) as demo:
                             value=1.,
                             step=0.05,
                         )
-
+                with gr.Row():
+                    width = gr.Slider(
+                            label='Width',
+                            minimum=512,
+                            maximum=1024,
+                            value=512,
+                            step=128,
+                        )
+                    height = gr.Slider(
+                            label='Height',
+                            minimum=512,
+                            maximum=1024,
+                            value=512,
+                            step=128,
+                        )
             with gr.Row():
                 clear = gr.ClearButton(
                     components=[prompt, negative_prompt, steps, seed, eta, cfg])
@@ -185,8 +202,8 @@ with gr.Blocks(css=css) as demo:
     gr.Markdown(f'{article}')
 
     submit.click(
-        fn=inference_img2img,
-        inputs=[prompt, negative_prompt, steps, seed, eta, cfg, inputImage, strength],
+        fn=inference,
+        inputs=[prompt, negative_prompt, steps, seed, eta, cfg, width, height],
         outputs=[genImage, seedTxt],
     )
 

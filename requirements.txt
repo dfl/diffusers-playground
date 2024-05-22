@@ -1,8 +1,15 @@
 --pre
-diffusers
-pillow
-piexif
 torch
 torchvision
 torchaudio
 --extra-index-url https://download.pytorch.org/whl/nightly/cpu
+gradio
+diffusers
+accelerate
+transformers
+peft
+pillow
+piexif
+compel
+
+# pip install diffusers transformers accelerate scipy safetensors
