@@ -88,22 +88,22 @@ def first_pass_inference(prompt, negative_prompt="", steps=4, seed=-1, eta=0.3, 
     generator = torch.Generator(device=device).manual_seed(int(seed))
 
     # Convert preImage to PIL Image if it's a filepath
+    original_image_path = None
     if preImage is not None:
         if isinstance(preImage, str):
+            original_image_path = preImage
             preImage = Image.open(preImage)
         
         # Resize pre-image to target dimensions
         preImage = preImage.resize((width, height), Image.LANCZOS)
         
         # Always use img2img pipeline when a pre-image is provided
-        conditioning, pooled = compel_proc(prompt)
-        neg_conditioning, neg_pooled = compel_proc(negative_prompt)
+        conditioning = compel_proc(prompt)
+        neg_conditioning = compel_proc(negative_prompt)
         
         low_res_image = img2img_pipe(
             prompt_embeds=conditioning,
-            pooled_prompt_embeds=pooled,
             negative_prompt_embeds=neg_conditioning,
-            negative_pooled_prompt_embeds=neg_pooled,
             num_inference_steps=steps,
             guidance_scale=cfg,
             eta=eta,
@@ -113,17 +113,15 @@ def first_pass_inference(prompt, negative_prompt="", steps=4, seed=-1, eta=0.3, 
         ).images[0]
     else:
         # Standard text-to-image generation
-        conditioning, pooled = compel_proc(prompt)
-        neg_conditioning, neg_pooled = compel_proc(negative_prompt)
+        conditioning = compel_proc(prompt)
+        neg_conditioning = compel_proc(negative_prompt)
         
         mheight = max(1024, height // 2)
         mwidth = max(1024, width // 2)
         
         low_res_image = pipe(
             prompt_embeds=conditioning,
-            pooled_prompt_embeds=pooled,
             negative_prompt_embeds=neg_conditioning,
-            negative_pooled_prompt_embeds=neg_pooled,
             num_inference_steps=steps,
             guidance_scale=cfg,
             eta=eta,
@@ -132,9 +130,9 @@ def first_pass_inference(prompt, negative_prompt="", steps=4, seed=-1, eta=0.3, 
             width=mwidth,
         ).images[0]
     
-    return low_res_image, seed
+    return low_res_image, seed, original_image_path
 
-def high_res_inference(low_res_image, prompt, negative_prompt, steps, seed, eta, cfg, hires_strength, width, height):
+def high_res_inference(low_res_image, prompt, negative_prompt, steps, seed, eta, cfg, hires_strength, width, height, original_image_path=None):
     # Convert low_res_image to PIL Image if it's a string (file path)
     if isinstance(low_res_image, str):
         low_res_image = Image.open(low_res_image)
@@ -142,8 +140,8 @@ def high_res_inference(low_res_image, prompt, negative_prompt, steps, seed, eta,
     generator = torch.Generator(device=device).manual_seed(int(seed))
     
     # Prepare conditioning
-    conditioning, pooled = compel_proc(prompt)
-    neg_conditioning, neg_pooled = compel_proc(negative_prompt)
+    conditioning = compel_proc(prompt)
+    neg_conditioning = compel_proc(negative_prompt)
     
     # Resize for high-res
     resized_image = low_res_image.resize((height, width), Image.LANCZOS)
@@ -151,9 +149,7 @@ def high_res_inference(low_res_image, prompt, negative_prompt, steps, seed, eta,
     # High-res refinement
     high_res_image = img2img_pipe(
         prompt_embeds=conditioning,
-        pooled_prompt_embeds=pooled,
         negative_prompt_embeds=neg_conditioning,
-        negative_pooled_prompt_embeds=neg_pooled,
         num_inference_steps=steps,
         guidance_scale=cfg,
         eta=eta,
@@ -161,8 +157,6 @@ def high_res_inference(low_res_image, prompt, negative_prompt, steps, seed, eta,
         height=height,
         width=width,
         image=resized_image,
-        original_size=(resized_image.height, resized_image.width),
-        target_size=(height, width),
         strength=hires_strength
     ).images[0]
     
@@ -177,7 +171,8 @@ def high_res_inference(low_res_image, prompt, negative_prompt, steps, seed, eta,
         "hires_strength": hires_strength,
         "model": base_model_id,
         "width": width,
-        "height": height
+        "height": height,
+        "original_image_path": original_image_path  # Added original image path
     }
     
     # Save high-res image
@@ -313,10 +308,10 @@ with gr.Blocks(css=css) as demo:
     submit.click(
         fn=first_pass_inference,
         inputs=[prompt, negative_prompt, steps, seed, eta, cfg, width, height, preImage],
-        outputs=[genImage, seed_state]
+        outputs=[genImage, seed_state, gr.State()]  # Add a state for original image path
     ).then(
         fn=high_res_inference,
-        inputs=[genImage, prompt, negative_prompt, steps, seed_state, eta, cfg, hires_strength, width, height],
+        inputs=[genImage, prompt, negative_prompt, steps, seed_state, eta, cfg, hires_strength, width, height, gr.State()],  # Include the original image path state
         outputs=[genImage]
     )
     randButton.click(fn=lambda: gr.Number(label="Random Seed", value=-1), show_progress=False, outputs=[seed])

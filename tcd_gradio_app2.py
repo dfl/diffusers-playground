@@ -42,8 +42,10 @@ tcd_lora_id = "h1t/TCD-SD21-base-LoRA"
 
 pipe = StableDiffusionPipeline.from_pretrained(
     base_model_id,
-    torch_dtype=torch.float32,  # Changed from torch.float16
-    variant=None  # No fp16 variant needed
+    torch_dtype=torch.float16,
+    variant="fp16"
+    # torch_dtype=torch.float32,  # Changed from torch.float16
+    # variant=None  # No fp16 variant needed
 ).to(device)
 pipe.scheduler = TCDScheduler.from_config(pipe.scheduler.config)
 
@@ -54,8 +56,10 @@ compel_proc = Compel(tokenizer=pipe.tokenizer, text_encoder=pipe.text_encoder)
 
 img2img_pipe = StableDiffusionImg2ImgPipeline.from_pretrained(
     base_model_id,
-    torch_dtype=torch.float32,  # Changed from torch.float16
-    variant=None  # No fp16 variant needed
+    torch_dtype=torch.float16,
+    variant="fp16"
+    # torch_dtype=torch.float32,  # Changed from torch.float16
+    # variant=None  # No fp16 variant needed
 ).to(device)
 img2img_pipe.scheduler = TCDScheduler.from_config(img2img_pipe.scheduler.config)
 
@@ -72,8 +76,10 @@ def first_pass_inference(prompt, negative_prompt="", steps=4, seed=-1, eta=0.3, 
     generator = torch.Generator(device=device).manual_seed(int(seed))
 
     # Convert preImage to PIL Image if it's a filepath
+    original_image_path = None
     if preImage is not None:
         if isinstance(preImage, str):
+            original_image_path = preImage
             preImage = Image.open(preImage)
         
         # Resize pre-image to target dimensions
@@ -112,9 +118,9 @@ def first_pass_inference(prompt, negative_prompt="", steps=4, seed=-1, eta=0.3, 
             width=mwidth,
         ).images[0]
     
-    return low_res_image, seed
+    return low_res_image, seed, original_image_path
 
-def high_res_inference(low_res_image, prompt, negative_prompt, steps, seed, eta, cfg, hires_strength, width, height):
+def high_res_inference(low_res_image, prompt, negative_prompt, steps, seed, eta, cfg, hires_strength, width, height, original_image_path=None):
     # Convert low_res_image to PIL Image if it's a string (file path)
     if isinstance(low_res_image, str):
         low_res_image = Image.open(low_res_image)
@@ -139,8 +145,6 @@ def high_res_inference(low_res_image, prompt, negative_prompt, steps, seed, eta,
         height=height,
         width=width,
         image=resized_image,
-        original_size=(resized_image.height, resized_image.width),
-        target_size=(height, width),
         strength=hires_strength
     ).images[0]
     
@@ -155,11 +159,12 @@ def high_res_inference(low_res_image, prompt, negative_prompt, steps, seed, eta,
         "hires_strength": hires_strength,
         "model": base_model_id,
         "width": width,
-        "height": height
+        "height": height,
+        "original_image_path": original_image_path  # Added original image path
     }
     
     # Save high-res image
-    high_res_path = f"outputs/TCDXL_high_res_seed-{seed}_steps-{steps}_{crc_hash(repr(metadata))}.{output_format}"
+    high_res_path = f"outputs/TCD2_high_res_seed-{seed}_steps-{steps}_{crc_hash(repr(metadata))}.{output_format}"
     save_image_with_geninfo(high_res_image, str(metadata), high_res_path)
     
     return high_res_image
@@ -199,8 +204,8 @@ def get_params_from_image(img) -> (str, str, int, int, float, float, float, int,
     eta = p.get('eta', 0.3)
     cfg = p.get('cfg', 1.0)
     hires_strength = p.get('hires_strength', 0.5)  # Default to 0.5 if not found
-    width = p.get('width', 1024)
-    height = p.get('height', 1024)
+    width = p.get('width', 512)
+    height = p.get('height', 512)
 
     return prompt, negative_prompt, steps, seed, eta, cfg, hires_strength, width, height
 
@@ -291,10 +296,10 @@ with gr.Blocks(css=css) as demo:
     submit.click(
         fn=first_pass_inference,
         inputs=[prompt, negative_prompt, steps, seed, eta, cfg, width, height, preImage],
-        outputs=[genImage, seed_state]
+        outputs=[genImage, seed_state, gr.State()]  # Add a state for original image path
     ).then(
         fn=high_res_inference,
-        inputs=[genImage, prompt, negative_prompt, steps, seed_state, eta, cfg, hires_strength, width, height],
+        inputs=[genImage, prompt, negative_prompt, steps, seed_state, eta, cfg, hires_strength, width, height, gr.State()],  # Include the original image path state
         outputs=[genImage]
     )
     randButton.click(fn=lambda: gr.Number(label="Random Seed", value=-1), show_progress=False, outputs=[seed])
