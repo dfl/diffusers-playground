@@ -6,7 +6,7 @@ from diffusers import StableDiffusionPipeline, StableDiffusionImg2ImgPipeline
 from compel import Compel
 
 from scheduling_tcd import TCDScheduler
-from utils import save_image_with_geninfo, crc_hash, parse_params_from_image, str2num
+from utils import save_image_with_geninfo, crc_hash, parse_params_from_image, str2num, default_torch_device
 from PIL import Image
 
 import os

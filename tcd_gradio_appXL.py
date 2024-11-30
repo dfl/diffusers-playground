@@ -6,7 +6,7 @@ from diffusers import StableDiffusionXLPipeline, StableDiffusionXLImg2ImgPipelin
 from compel import Compel, ReturnedEmbeddingsType
 
 from scheduling_tcd import TCDScheduler
-from utils import save_image_with_geninfo, crc_hash, parse_params_from_image, str2num
+from utils import save_image_with_geninfo, crc_hash, parse_params_from_image, str2num, default_torch_device
 from PIL import Image
 
 import os
@@ -36,7 +36,7 @@ button.tool {
 }
 """
 
-device = "mps"
+device = default_torch_device()
 base_model_id = "stabilityai/stable-diffusion-xl-base-1.0"
 tcd_lora_id = "h1t/TCD-SDXL-LoRA"
 

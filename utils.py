@@ -5,6 +5,7 @@ import piexif
 import piexif.helper
 import ast
 import re
+import torch
 
 def crc_hash(string: str) -> str:  # 8 characters
     crc = zlib.crc32(string.encode())
@@ -124,3 +125,14 @@ def str2num(string) -> Union[int, None]:
             return int(num_str)  # Convert decimal string to integer
     else:
         return None
+
+
+def default_torch_device() -> str:
+    if torch.backends.mps.is_available():
+        default_device = "mps"
+    elif torch.cuda.is_available():
+        default_device = "cuda"
+    else:
+        default_device = "cpu"
+    return default_device
+
