@@ -98,12 +98,14 @@ def first_pass_inference(prompt, negative_prompt="", steps=4, seed=-1, eta=0.3, 
         preImage = preImage.resize((width, height), Image.LANCZOS)
         
         # Always use img2img pipeline when a pre-image is provided
-        conditioning = compel_proc(prompt)
-        neg_conditioning = compel_proc(negative_prompt)
-        
+        conditioning, pooled = compel_proc(prompt)
+        neg_conditioning, neg_pooled = compel_proc(negative_prompt)
+
         low_res_image = img2img_pipe(
             prompt_embeds=conditioning,
+            pooled_prompt_embeds=pooled,
             negative_prompt_embeds=neg_conditioning,
+            negative_pooled_prompt_embeds=neg_pooled,
             num_inference_steps=steps,
             guidance_scale=cfg,
             eta=eta,
@@ -113,15 +115,17 @@ def first_pass_inference(prompt, negative_prompt="", steps=4, seed=-1, eta=0.3, 
         ).images[0]
     else:
         # Standard text-to-image generation
-        conditioning = compel_proc(prompt)
-        neg_conditioning = compel_proc(negative_prompt)
+        conditioning, pooled = compel_proc(prompt)
+        neg_conditioning, neg_pooled = compel_proc(negative_prompt)
         
         mheight = max(1024, height // 2)
         mwidth = max(1024, width // 2)
         
         low_res_image = pipe(
             prompt_embeds=conditioning,
+            pooled_prompt_embeds=pooled,
             negative_prompt_embeds=neg_conditioning,
+            negative_pooled_prompt_embeds=neg_pooled,
             num_inference_steps=steps,
             guidance_scale=cfg,
             eta=eta,
@@ -168,15 +172,15 @@ def high_res_inference(low_res_image, prompt, negative_prompt, steps, seed, eta,
         "cfg": cfg,
         "prompt": prompt,
         "negative_prompt": negative_prompt,
-        "hires_strength": hires_strength,
+        "denoise": hires_strength,
         "model": base_model_id,
         "width": width,
         "height": height,
-        "original_image_path": original_image_path  # Added original image path
+        "img2img": os.path.basename(original_image_path)
     }
     
     # Save high-res image
-    high_res_path = f"outputs/TCDXL_high_res_seed-{seed}_steps-{steps}_{crc_hash(repr(metadata))}.{output_format}"
+    high_res_path = f"outputs/TCDXL-{seed}_steps-{steps}_{crc_hash(repr(metadata))}.{output_format}"
     save_image_with_geninfo(high_res_image, str(metadata), high_res_path)
     
     return high_res_image
@@ -215,7 +219,7 @@ def get_params_from_image(img) -> (str, str, int, int, float, float, float, int,
     steps = p.get('steps', 4)
     eta = p.get('eta', 0.3)
     cfg = p.get('cfg', 1.0)
-    hires_strength = p.get('hires_strength', 0.5)  # Default to 0.5 if not found
+    hires_strength = p.get('denoise', 0.5)  # Default to 0.5 if not found
     width = p.get('width', 1024)
     height = p.get('height', 1024)
 
@@ -277,10 +281,10 @@ with gr.Blocks(css=css) as demo:
                         )
                 with gr.Row():
                     hires_strength = gr.Slider(
-                        label='Hires Fix Strength',
-                        minimum=0.0,
+                        label='Denoise Strength',
+                        minimum=0.15,
                         maximum=1.0,
-                        value=0.2,
+                        value=0.5,
                         step=0.05,
                     )
 
@@ -305,13 +309,15 @@ with gr.Blocks(css=css) as demo:
     gr.Markdown(f'{article}')
 
     seed_state = gr.State()
+    preimage_path_state = gr.State()
+
     submit.click(
         fn=first_pass_inference,
         inputs=[prompt, negative_prompt, steps, seed, eta, cfg, width, height, preImage],
-        outputs=[genImage, seed_state, gr.State()]  # Add a state for original image path
+        outputs=[genImage, seed_state, preimage_path_state]
     ).then(
         fn=high_res_inference,
-        inputs=[genImage, prompt, negative_prompt, steps, seed_state, eta, cfg, hires_strength, width, height, gr.State()],  # Include the original image path state
+        inputs=[genImage, prompt, negative_prompt, steps, seed_state, eta, cfg, hires_strength, width, height, preimage_path_state],
         outputs=[genImage]
     )
     randButton.click(fn=lambda: gr.Number(label="Random Seed", value=-1), show_progress=False, outputs=[seed])
