@@ -77,6 +77,7 @@ img2img_pipe.fuse_lora()
 
 # pipe.scheduler.forward = debug_forward
 
+MAX_WIDTH = 1024
 
 def newSeed() -> int:
     return int(random.randrange(4294967294))
@@ -96,11 +97,14 @@ def first_pass_inference(prompt, negative_prompt="", steps=4, seed=-1, eta=0.3, 
         
         # Resize pre-image to target dimensions
         preImage = preImage.resize((width, height), Image.LANCZOS)
-        
-        # Always use img2img pipeline when a pre-image is provided
-        conditioning, pooled = compel_proc(prompt)
-        neg_conditioning, neg_pooled = compel_proc(negative_prompt)
 
+    # Prepare conditioning
+    conditioning, pooled = compel_proc(prompt)
+    neg_conditioning, neg_pooled = compel_proc(negative_prompt)
+
+    # Determine generation method based on image size and pre-image
+    if preImage is not None:
+        # Use img2img pipeline when a pre-image is provided
         low_res_image = img2img_pipe(
             prompt_embeds=conditioning,
             pooled_prompt_embeds=pooled,
@@ -113,13 +117,24 @@ def first_pass_inference(prompt, negative_prompt="", steps=4, seed=-1, eta=0.3, 
             image=preImage,
             strength=0.5  # Moderate strength for refinement
         ).images[0]
+    elif width <= MAX_WIDTH or height <= MAX_WIDTH:
+        # Generate using standard text-to-image for smaller sizes
+        low_res_image = pipe(
+            prompt_embeds=conditioning,
+            pooled_prompt_embeds=pooled,
+            negative_prompt_embeds=neg_conditioning,
+            negative_pooled_prompt_embeds=neg_pooled,
+            num_inference_steps=steps,
+            guidance_scale=cfg,
+            eta=eta,
+            generator=generator,
+            height=height,
+            width=width,
+        ).images[0]
     else:
-        # Standard text-to-image generation
-        conditioning, pooled = compel_proc(prompt)
-        neg_conditioning, neg_pooled = compel_proc(negative_prompt)
-        
-        mheight = max(1024, height // 2)
-        mwidth = max(1024, width // 2)
+        # Generate at half resolution for larger sizes
+        mheight = max(MAX_WIDTH, height // 2)
+        mwidth = max(MAX_WIDTH, width // 2)
         
         low_res_image = pipe(
             prompt_embeds=conditioning,
@@ -141,9 +156,30 @@ def high_res_inference(low_res_image, prompt, negative_prompt, steps, seed, eta,
     if isinstance(low_res_image, str):
         low_res_image = Image.open(low_res_image)
 
+    # Metadata preparation
+    metadata = {
+        "seed": seed,
+        "steps": steps,
+        "eta": eta,
+        "cfg": cfg,
+        "prompt": prompt,
+        "negative_prompt": negative_prompt,
+        "denoise": hires_strength,
+        "model": base_model_id,
+        "width": width,
+        "height": height,
+        "img2img": os.path.basename(original_image_path) if original_image_path else "None"
+    }
+    
+    if width <= MAX_WIDTH or height <= MAX_WIDTH: # skip high-res refinement for small images
+        # Save the image with metadata
+        high_res_path = f"outputs/TCDXL-{seed}_steps-{steps}_{crc_hash(repr(metadata))}.{output_format}"
+        save_image_with_geninfo(low_res_image, str(metadata), high_res_path)
+        return low_res_image
+
     generator = torch.Generator(device=device).manual_seed(int(seed))
     
-    # Prepare conditioning - CORRECTED: Unpack the tuple
+    # Prepare conditioning - Unpack the tuple
     conditioning, pooled = compel_proc(prompt)
     neg_conditioning, neg_pooled = compel_proc(negative_prompt)
     
@@ -165,21 +201,6 @@ def high_res_inference(low_res_image, prompt, negative_prompt, steps, seed, eta,
         image=resized_image,
         strength=hires_strength
     ).images[0]
-    
-    # Metadata and saving logic
-    metadata = {
-        "seed": seed,
-        "steps": steps,
-        "eta": eta,
-        "cfg": cfg,
-        "prompt": prompt,
-        "negative_prompt": negative_prompt,
-        "denoise": hires_strength,
-        "model": base_model_id,
-        "width": width,
-        "height": height,
-        "img2img": os.path.basename(original_image_path)
-    }
     
     # Save high-res image
     high_res_path = f"outputs/TCDXL-{seed}_steps-{steps}_{crc_hash(repr(metadata))}.{output_format}"
@@ -221,9 +242,9 @@ def get_params_from_image(img) -> (str, str, int, int, float, float, float, int,
     steps = p.get('steps', 4)
     eta = p.get('eta', 0.3)
     cfg = p.get('cfg', 1.0)
-    hires_strength = p.get('denoise', 0.5)  # Default to 0.5 if not found
-    width = p.get('width', 1024)
-    height = p.get('height', 1024)
+    hires_strength = p.get('denoise', 0.8)
+    width = p.get('width', MAX_WIDTH)
+    height = p.get('height', MAX_WIDTH)
 
     return prompt, negative_prompt, steps, seed, eta, cfg, hires_strength, width, height
 
@@ -286,7 +307,7 @@ with gr.Blocks(css=css) as demo:
                         label='Denoise Strength',
                         minimum=0.15,
                         maximum=1.0,
-                        value=0.5,
+                        value=0.8,
                         step=0.05,
                     )
 
