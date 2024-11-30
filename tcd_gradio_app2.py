@@ -38,7 +38,6 @@ button.tool {
 
 device = "mps"
 base_model_id = "stabilityai/stable-diffusion-2-1-base"
-# base_model_id = "stabilityai/stable-diffusion-2-1" # 768
 tcd_lora_id = "h1t/TCD-SD21-base-LoRA"
 
 pipe = StableDiffusionPipeline.from_pretrained(
@@ -219,3 +218,6 @@ with gr.Blocks(css=css) as demo:
     )
 
 demo.launch()
+
+# TODO: add real-ESRGAN
+# https://github.com/ai-forever/Real-ESRGAN

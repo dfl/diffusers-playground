@@ -11,5 +11,7 @@ peft
 pillow
 piexif
 compel
+# git+https://github.com/sberbank-ai/Real-ESRGAN.git
 
 # pip install diffusers transformers accelerate scipy safetensors
+

@@ -79,7 +79,7 @@ def inference(prompt, negative_prompt="", steps=4, seed=-1, eta=0.3, cfg=0) -> (
         height=1024,
         # width=768,
     ).images[0]
-    d = {"seed": seed, "steps": steps, "eta": eta, "cfg": cfg, "prompt": prompt, "negative_prompt": negative_prompt}
+    d = {"seed": seed, "steps": steps, "eta": eta, "cfg": cfg, "prompt": prompt, "negative_prompt": negative_prompt, "model": base_model_id}
     path = f"outputs/TCD_seed-{seed}_steps-{steps}_{crc_hash(repr(d))}.{output_format}"
     save_image_with_geninfo(image, str(d), path )
     return image, f"seed: {seed}"
