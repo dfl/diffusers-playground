@@ -2,7 +2,8 @@ import random
 
 import gradio as gr
 import torch
-from diffusers import StableDiffusionXLPipeline
+from diffusers import StableDiffusionXLPipeline, StableDiffusionXLImg2ImgPipeline
+from compel import Compel, ReturnedEmbeddingsType
 
 from scheduling_tcd import TCDScheduler
 from utils import save_image_with_geninfo, crc_hash, parse_params_from_image, str2num
@@ -49,6 +50,23 @@ pipe.scheduler = TCDScheduler.from_config(pipe.scheduler.config)
 pipe.load_lora_weights(tcd_lora_id)
 pipe.fuse_lora()
 
+compel_proc = Compel(
+  tokenizer=[pipe.tokenizer, pipe.tokenizer_2] ,
+  text_encoder=[pipe.text_encoder, pipe.text_encoder_2],
+  returned_embeddings_type=ReturnedEmbeddingsType.PENULTIMATE_HIDDEN_STATES_NON_NORMALIZED,
+  requires_pooled=[False, True]
+)
+
+img2img_pipe = StableDiffusionXLImg2ImgPipeline.from_pretrained(
+    base_model_id,
+    torch_dtype=torch.float16,
+    variant="fp16"
+).to(device)
+img2img_pipe.scheduler = TCDScheduler.from_config(img2img_pipe.scheduler.config)
+
+img2img_pipe.load_lora_weights(tcd_lora_id)
+img2img_pipe.fuse_lora()
+
 # original_forward = pipe.scheduler.forward
 
 # def debug_forward(*args, **kwargs):
@@ -63,30 +81,81 @@ pipe.fuse_lora()
 def newSeed() -> int:
     return int(random.randrange(4294967294))
 
-def inference(prompt, negative_prompt="", steps=4, seed=-1, eta=0.3, cfg=0) -> (Image.Image, str):
+def inference(prompt, negative_prompt="", steps=4, seed=-1, eta=0.3, cfg=0, hires_strength=0.5, width=512, height=512 ) -> (Image.Image, str):
     if seed is None or seed == '' or seed == -1:
         seed = newSeed()
     print(f"prompt: {prompt}; negative: {negative_prompt}")
-    print(f"seed: {seed}; steps: {steps}; eta: {eta}")
+    print(f"seed: {seed}; steps: {steps}; eta: {eta}; hires_strength: {hires_strength}; width: {width}; height: {height}")
     generator = torch.Generator(device=device).manual_seed(int(seed))
-    image = pipe(
-        prompt=prompt,
-        negative_prompt=negative_prompt,
+
+    # hires fix in two steps:
+
+    # Step 1: Generate the initial low-res image
+    conditioning, pooled = compel_proc(prompt)
+    neg_conditioning, neg_pooled = compel_proc(negative_prompt)
+    mheight = max(1024, height // 2)
+    mwidth = max(1024, width // 2)
+    low_res_image = pipe(
+        prompt_embeds=conditioning,
+        pooled_prompt_embeds=pooled,
+        negative_prompt_embeds=neg_conditioning,
+        negative_pooled_prompt_embeds=neg_pooled,
         num_inference_steps=steps,
         guidance_scale=cfg,
         eta=eta,
         generator=generator,
-        height=1024,
-        # width=768,
+        height=mheight,
+        width=mwidth,
     ).images[0]
-    d = {"seed": seed, "steps": steps, "eta": eta, "cfg": cfg, "prompt": prompt, "negative_prompt": negative_prompt, "model": base_model_id}
-    path = f"outputs/TCD_seed-{seed}_steps-{steps}_{crc_hash(repr(d))}.{output_format}"
-    save_image_with_geninfo(image, str(d), path )
-    return image, f"seed: {seed}"
+
+    if height > 1024 or width > 1024:
+        print(f"first pass complete... running hires fix second pass")
+
+        resized_image = low_res_image.resize((height, width), Image.LANCZOS)
+
+        # # Step 2: High-res refinement
+        high_res_image = img2img_pipe(
+            prompt_embeds=conditioning,
+            pooled_prompt_embeds=pooled,
+            negative_prompt_embeds=neg_conditioning,
+            negative_pooled_prompt_embeds=neg_pooled,
+            num_inference_steps=steps,
+            guidance_scale=cfg,
+            eta=eta,
+            generator=generator,
+            height=height,
+            width=width,
+            image=resized_image,
+            original_size=(mheight, mwidth),
+            target_size=(height, width),
+            strength=hires_strength
+        ).images[0]
+    else:
+        print("No need for high-res refinement")
+        high_res_image = low_res_image
+
+    # Save metadata including hires_strength
+    metadata = {
+        "seed": seed,
+        "steps": steps,
+        "eta": eta,
+        "cfg": cfg,
+        "prompt": prompt,
+        "negative_prompt": negative_prompt,
+        "hires_strength": hires_strength,
+        "model": base_model_id,
+        "width": width,
+        "height": height
+    }
+    path = f"outputs/TCDXL_seed-{seed}_steps-{steps}_{crc_hash(repr(metadata))}.{output_format}"
+    save_image_with_geninfo(high_res_image, str(metadata), path)
+
     
+    return high_res_image, low_res_image, f"seed: {seed}"
+
 
 # Define style
-title = "<h1>Trajectory Consistency Distillation</h1>"
+title = "<h1>Trajectory Consistency Distillation (SDXL)</h1>"
 description = "<h3>Unofficial Gradio demo for Trajectory Consistency Distillation</h3>"
 article = "<p style='text-align: center'><a href='https://arxiv.org/abs/' target='_blank'>Trajectory Consistency Distillation</a> | <a href='https://github.com/jabir-zheng/TCD' target='_blank'>Github Repo</a></p>"
 
@@ -111,15 +180,19 @@ examples = [
     ],
 ]
 
-def get_params_from_image(img) -> (str, str, int, int, float, float):
+def get_params_from_image(img) -> (str, str, int, int, float, float, float, int, int):
     p = parse_params_from_image(img)
-    prompt = p.get('prompt','')
-    negative_prompt = p.get('negative_prompt','')
-    seed = p.get('seed',-1)
-    steps = p.get('steps',4)
-    eta = p.get('eta',0.3)
-    cfg = p.get('cfg',1.0)
-    return prompt, negative_prompt, steps, seed, eta, cfg
+    prompt = p.get('prompt', '')
+    negative_prompt = p.get('negative_prompt', '')
+    seed = p.get('seed', -1)
+    steps = p.get('steps', 4)
+    eta = p.get('eta', 0.3)
+    cfg = p.get('cfg', 1.0)
+    hires_strength = p.get('hires_strength', 0.5)  # Default to 0.5 if not found
+    width = p.get('width', 1024)
+    height = p.get('height', 1024)
+
+    return prompt, negative_prompt, steps, seed, eta, cfg, hires_strength, width, height
 
 with gr.Blocks(css=css) as demo:
     gr.Markdown(f'# {title}\n### {description}')
@@ -160,6 +233,29 @@ with gr.Blocks(css=css) as demo:
                             value=1.,
                             step=0.05,
                         )
+                with gr.Row():
+                    width = gr.Slider(
+                            label='Width',
+                            minimum=512,
+                            maximum=2048,
+                            value=2048,
+                            step=128,
+                        )
+                    height = gr.Slider(
+                            label='Height',
+                            minimum=512,
+                            maximum=2048,
+                            value=2048,
+                            step=128,
+                        )
+                with gr.Row():
+                    hires_strength = gr.Slider(
+                        label='Hires Fix Strength',
+                        minimum=0.0,
+                        maximum=1.0,
+                        value=0.2,
+                        step=0.05,
+                    )
 
             with gr.Row():
                 clear = gr.ClearButton(
@@ -177,13 +273,14 @@ with gr.Blocks(css=css) as demo:
         with gr.Column():
             genImage = gr.Image(label='Generated Image', sources=['upload','clipboard'], interactive=True, type="filepath")
             seedTxt = gr.Markdown(label='Output Seed')
+            preImage = gr.Image(label='Generated Image', interactive=False)
 
     gr.Markdown(f'{article}')
 
     submit.click(
         fn=inference,
-        inputs=[prompt, negative_prompt, steps, seed, eta, cfg],
-        outputs=[genImage, seedTxt],
+        inputs=[prompt, negative_prompt, steps, seed, eta, cfg, hires_strength, width, height],
+        outputs=[genImage, preImage, seedTxt],
     )
 
     randButton.click(fn=lambda: gr.Number(label="Random Seed", value=-1), show_progress=False, outputs=[seed])
@@ -193,8 +290,11 @@ with gr.Blocks(css=css) as demo:
     genImage.upload(
         fn=get_params_from_image,
         inputs=[genImage],
-        outputs=[prompt, negative_prompt, steps, seed, eta, cfg],
+        outputs=[prompt, negative_prompt, steps, seed, eta, cfg, hires_strength, width, height],
         show_progress=False
     )
 
 demo.launch()
+
+# TODO: add real-ESRGAN
+# https://github.com/ai-forever/Real-ESRGAN
