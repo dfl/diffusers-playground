@@ -143,9 +143,9 @@ def high_res_inference(low_res_image, prompt, negative_prompt, steps, seed, eta,
 
     generator = torch.Generator(device=device).manual_seed(int(seed))
     
-    # Prepare conditioning
-    conditioning = compel_proc(prompt)
-    neg_conditioning = compel_proc(negative_prompt)
+    # Prepare conditioning - CORRECTED: Unpack the tuple
+    conditioning, pooled = compel_proc(prompt)
+    neg_conditioning, neg_pooled = compel_proc(negative_prompt)
     
     # Resize for high-res
     resized_image = low_res_image.resize((height, width), Image.LANCZOS)
@@ -153,7 +153,9 @@ def high_res_inference(low_res_image, prompt, negative_prompt, steps, seed, eta,
     # High-res refinement
     high_res_image = img2img_pipe(
         prompt_embeds=conditioning,
+        pooled_prompt_embeds=pooled,
         negative_prompt_embeds=neg_conditioning,
+        negative_pooled_prompt_embeds=neg_pooled,
         num_inference_steps=steps,
         guidance_scale=cfg,
         eta=eta,
