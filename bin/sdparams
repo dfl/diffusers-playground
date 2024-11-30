@@ -1,0 +1,73 @@
+#!/bin/bash
+
+# Function to display usage information
+show_usage() {
+    echo "Usage: $0 <image-file>"
+    echo "Extract metadata or embedded text from PNG and JPEG images."
+    echo
+    echo "Arguments:"
+    echo "  <image-file>    Path to the image file (PNG or JPEG) to process."
+    echo
+    echo "This script requires ImageMagick (identify) and Exiv2 to be installed."
+    echo "Ensure that these tools are present before using the script."
+    echo
+    exit 1
+}
+
+# Check if an argument is provided
+if [[ $# -eq 0 ]]; then
+    show_usage
+fi
+
+filetype=$(file -b --mime-type "$1")
+
+# Function to check dependencies
+check_dependencies() {
+    local missing_deps=()
+    # Check if ImageMagick is installed
+    if ! command -v identify >/dev/null 2>&1; then
+        missing_deps+=("ImageMagick (identify)")
+    fi
+    # Check if Exiv2 is installed
+    if ! command -v exiv2 >/dev/null 2>&1; then
+        missing_deps+=("Exiv2 (exiv2)")
+    fi
+
+    if [[ ${#missing_deps[@]} -gt 0 ]]; then
+        echo "The following dependencies are missing:"
+        for dep in "${missing_deps[@]}"; do
+            echo "  - $dep"
+        done
+
+        # OS-specific installation instructions
+        if [[ "$OSTYPE" == "linux-gnu"* ]]; then
+            echo "On Linux, install the tools using your package manager."
+            echo "Examples:"
+            echo "  Debian/Ubuntu: sudo apt install imagemagick exiv2"
+            echo "  Fedora: sudo dnf install imagemagick exiv2"
+            echo "  Arch: sudo pacman -S imagemagick exiv2"
+        elif [[ "$OSTYPE" == "darwin"* ]]; then
+            echo "On macOS, you can install these tools with Homebrew:"
+            echo "  brew install imagemagick exiv2"
+        elif [[ "$OSTYPE" == "cygwin" || "$OSTYPE" == "msys"* || "$OSTYPE" == "win32" ]]; then
+            echo "For Windows, download and install the following tools:"
+            echo "  ImageMagick: https://imagemagick.org/script/download.php"
+            echo "  Exiv2: https://exiv2.org/download.html"
+        fi
+
+        echo "Please install the above tools and re-run the script."
+        exit 1
+    fi
+}
+
+# Run dependency check
+check_dependencies
+
+# Process the image file based on type
+if [[ $filetype == "image/png" ]]; then
+    identify -verbose "$1" | grep -A2 "invoke\|param\|prompt" | grep -v 'png:IHDR' | sed -e 's/"//g' -e 's/^[[:space:]]*parameters: //'
+elif [[ $filetype == "image/jpeg" ]]; then
+    exiv2 "$1" 2>/dev/null | grep 'Exif comment' | awk '{print substr($0, index($0, "Unicode") + 8)}'
+else
+    echo "Unsupported file type: $filetype"
+fi
