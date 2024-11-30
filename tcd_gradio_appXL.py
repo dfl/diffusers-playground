@@ -81,39 +81,73 @@ img2img_pipe.fuse_lora()
 def newSeed() -> int:
     return int(random.randrange(4294967294))
 
-def inference(prompt, negative_prompt="", steps=4, seed=-1, eta=0.3, cfg=0, hires_strength=0.5, width=512, height=512 ) -> (Image.Image, str):
+def inference(prompt, negative_prompt="", steps=4, seed=-1, eta=0.3, cfg=0, hires_strength=0.5, width=512, height=512, preImage=None) -> (Image.Image, Image.Image, str):
     if seed is None or seed == '' or seed == -1:
         seed = newSeed()
     print(f"prompt: {prompt}; negative: {negative_prompt}")
     print(f"seed: {seed}; steps: {steps}; eta: {eta}; hires_strength: {hires_strength}; width: {width}; height: {height}")
     generator = torch.Generator(device=device).manual_seed(int(seed))
 
-    # hires fix in two steps:
+    # Convert preImage to PIL Image if it's a filepath
+    if preImage is not None:
+        if isinstance(preImage, str):
+            preImage = Image.open(preImage)
+        
+        # Resize pre-image to target dimensions
+        preImage = preImage.resize((width, height), Image.LANCZOS)
+        
+        # Always use img2img pipeline when a pre-image is provided
+        conditioning, pooled = compel_proc(prompt)
+        neg_conditioning, neg_pooled = compel_proc(negative_prompt)
+        
+        # If dimensions are small, use the original image as low_res and img2img as gen
+        low_res_image = preImage  # Original image
+        
+        # Img2img refinement
+        gen_image = img2img_pipe(
+            prompt_embeds=conditioning,
+            pooled_prompt_embeds=pooled,
+            negative_prompt_embeds=neg_conditioning,
+            negative_pooled_prompt_embeds=neg_pooled,
+            num_inference_steps=steps,
+            guidance_scale=cfg,
+            eta=eta,
+            generator=generator,
+            image=preImage,
+            strength=0.5  # Moderate strength for refinement
+        ).images[0]
+    else:
+        # Standard text-to-image generation
+        conditioning, pooled = compel_proc(prompt)
+        neg_conditioning, neg_pooled = compel_proc(negative_prompt)
+        
+        mheight = max(1024, height // 2)
+        mwidth = max(1024, width // 2)
+        
+        low_res_image = pipe(
+            prompt_embeds=conditioning,
+            pooled_prompt_embeds=pooled,
+            negative_prompt_embeds=neg_conditioning,
+            negative_pooled_prompt_embeds=neg_pooled,
+            num_inference_steps=steps,
+            guidance_scale=cfg,
+            eta=eta,
+            generator=generator,
+            height=mheight,
+            width=mwidth,
+        ).images[0]
+        
+        # For text-to-image, gen_image is the same as low_res_image
+        gen_image = low_res_image
 
-    # Step 1: Generate the initial low-res image
-    conditioning, pooled = compel_proc(prompt)
-    neg_conditioning, neg_pooled = compel_proc(negative_prompt)
-    mheight = max(1024, height // 2)
-    mwidth = max(1024, width // 2)
-    low_res_image = pipe(
-        prompt_embeds=conditioning,
-        pooled_prompt_embeds=pooled,
-        negative_prompt_embeds=neg_conditioning,
-        negative_pooled_prompt_embeds=neg_pooled,
-        num_inference_steps=steps,
-        guidance_scale=cfg,
-        eta=eta,
-        generator=generator,
-        height=mheight,
-        width=mwidth,
-    ).images[0]
+    # Determine if high-res refinement is needed
+    need_hires_refinement = height > 1024 or width > 1024
 
-    if height > 1024 or width > 1024:
-        print(f"first pass complete... running hires fix second pass")
+    # High-res refinement
+    if need_hires_refinement:
+        print(f"Running high-res refinement")
+        resized_image = gen_image.resize((height, width), Image.LANCZOS)
 
-        resized_image = low_res_image.resize((height, width), Image.LANCZOS)
-
-        # # Step 2: High-res refinement
         high_res_image = img2img_pipe(
             prompt_embeds=conditioning,
             pooled_prompt_embeds=pooled,
@@ -126,13 +160,13 @@ def inference(prompt, negative_prompt="", steps=4, seed=-1, eta=0.3, cfg=0, hire
             height=height,
             width=width,
             image=resized_image,
-            original_size=(mheight, mwidth),
+            original_size=(resized_image.height, resized_image.width),
             target_size=(height, width),
             strength=hires_strength
         ).images[0]
     else:
         print("No need for high-res refinement")
-        high_res_image = low_res_image
+        high_res_image = gen_image
 
     # Save metadata including hires_strength
     metadata = {
@@ -147,10 +181,20 @@ def inference(prompt, negative_prompt="", steps=4, seed=-1, eta=0.3, cfg=0, hire
         "width": width,
         "height": height
     }
-    path = f"outputs/TCDXL_seed-{seed}_steps-{steps}_{crc_hash(repr(metadata))}.{output_format}"
-    save_image_with_geninfo(high_res_image, str(metadata), path)
-
     
+    # Save image(s)
+    if need_hires_refinement:
+        # Save both low and high-res if refinement was needed
+        high_res_path = f"outputs/TCDXL_high_res_seed-{seed}_steps-{steps}_{crc_hash(repr(metadata))}.{output_format}"
+        save_image_with_geninfo(high_res_image, str(metadata), high_res_path)
+        
+        low_res_path = f"outputs/TCDXL_low_res_seed-{seed}_steps-{steps}_{crc_hash(repr(metadata))}.{output_format}"
+        save_image_with_geninfo(low_res_image, str(metadata), low_res_path)
+    else:
+        # Save only one image if no refinement needed
+        path = f"outputs/TCDXL_seed-{seed}_steps-{steps}_{crc_hash(repr(metadata))}.{output_format}"
+        save_image_with_geninfo(gen_image, str(metadata), path)
+
     return high_res_image, low_res_image, f"seed: {seed}"
 
 
@@ -273,16 +317,15 @@ with gr.Blocks(css=css) as demo:
         with gr.Column():
             genImage = gr.Image(label='Generated Image', sources=['upload','clipboard'], interactive=True, type="filepath")
             seedTxt = gr.Markdown(label='Output Seed')
-            preImage = gr.Image(label='Generated Image', interactive=False)
+            preImage = gr.Image(label='First-Pass Image', sources=['upload','clipboard'], interactive=True, type="filepath")
 
     gr.Markdown(f'{article}')
 
     submit.click(
         fn=inference,
-        inputs=[prompt, negative_prompt, steps, seed, eta, cfg, hires_strength, width, height],
+        inputs=[prompt, negative_prompt, steps, seed, eta, cfg, hires_strength, width, height, preImage],
         outputs=[genImage, preImage, seedTxt],
     )
-
     randButton.click(fn=lambda: gr.Number(label="Random Seed", value=-1), show_progress=False, outputs=[seed])
     luckyButton.click(fn=lambda: gr.Number(label="Random Seed", value=newSeed()), show_progress=False, outputs=[seed])
     recycleButton.click(fn=lambda seedTxt: gr.Number(label="Random Seed", value=str2num(seedTxt)), show_progress=False, inputs=[seedTxt], outputs=[seed])
@@ -291,6 +334,13 @@ with gr.Blocks(css=css) as demo:
         fn=get_params_from_image,
         inputs=[genImage],
         outputs=[prompt, negative_prompt, steps, seed, eta, cfg, hires_strength, width, height],
+        show_progress=False
+    )
+
+    preImage.upload(
+        fn=lambda img: img,  # Simply return the uploaded image
+        inputs=[preImage],
+        outputs=[preImage],
         show_progress=False
     )
 
