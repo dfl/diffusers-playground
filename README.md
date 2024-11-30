@@ -1,3 +1,7 @@
+
+![screenshot of gradio app](./etc/screenshot.png)
+
+
 This is a Gradio app to explore different ways of using Stable Diffusion image generation with the Diffusers library.
 The most developed tools are Gradio apps to use [Trajectory Consistent Distillation](https://mhh0318.github.io/tcd/)
 I have created one for SDXL and for SD 2.1
