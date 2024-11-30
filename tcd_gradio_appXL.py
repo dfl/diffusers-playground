@@ -81,11 +81,10 @@ img2img_pipe.fuse_lora()
 def newSeed() -> int:
     return int(random.randrange(4294967294))
 
-def inference(prompt, negative_prompt="", steps=4, seed=-1, eta=0.3, cfg=0, hires_strength=0.5, width=512, height=512, preImage=None) -> (Image.Image, Image.Image, str):
+def first_pass_inference(prompt, negative_prompt="", steps=4, seed=-1, eta=0.3, cfg=0, width=512, height=512, preImage=None):
     if seed is None or seed == '' or seed == -1:
         seed = newSeed()
-    print(f"prompt: {prompt}; negative: {negative_prompt}")
-    print(f"seed: {seed}; steps: {steps}; eta: {eta}; hires_strength: {hires_strength}; width: {width}; height: {height}")
+    
     generator = torch.Generator(device=device).manual_seed(int(seed))
 
     # Convert preImage to PIL Image if it's a filepath
@@ -100,11 +99,7 @@ def inference(prompt, negative_prompt="", steps=4, seed=-1, eta=0.3, cfg=0, hire
         conditioning, pooled = compel_proc(prompt)
         neg_conditioning, neg_pooled = compel_proc(negative_prompt)
         
-        # If dimensions are small, use the original image as low_res and img2img as gen
-        low_res_image = preImage  # Original image
-        
-        # Img2img refinement
-        gen_image = img2img_pipe(
+        low_res_image = img2img_pipe(
             prompt_embeds=conditioning,
             pooled_prompt_embeds=pooled,
             negative_prompt_embeds=neg_conditioning,
@@ -136,39 +131,42 @@ def inference(prompt, negative_prompt="", steps=4, seed=-1, eta=0.3, cfg=0, hire
             height=mheight,
             width=mwidth,
         ).images[0]
-        
-        # For text-to-image, gen_image is the same as low_res_image
-        gen_image = low_res_image
+    
+    return low_res_image, seed
 
-    # Determine if high-res refinement is needed
-    need_hires_refinement = height > 1024 or width > 1024
+def high_res_inference(low_res_image, prompt, negative_prompt, steps, seed, eta, cfg, hires_strength, width, height):
+    # Convert low_res_image to PIL Image if it's a string (file path)
+    if isinstance(low_res_image, str):
+        low_res_image = Image.open(low_res_image)
+
+    generator = torch.Generator(device=device).manual_seed(int(seed))
+    
+    # Prepare conditioning
+    conditioning, pooled = compel_proc(prompt)
+    neg_conditioning, neg_pooled = compel_proc(negative_prompt)
+    
+    # Resize for high-res
+    resized_image = low_res_image.resize((height, width), Image.LANCZOS)
 
     # High-res refinement
-    if need_hires_refinement:
-        print(f"Running high-res refinement")
-        resized_image = gen_image.resize((height, width), Image.LANCZOS)
-
-        high_res_image = img2img_pipe(
-            prompt_embeds=conditioning,
-            pooled_prompt_embeds=pooled,
-            negative_prompt_embeds=neg_conditioning,
-            negative_pooled_prompt_embeds=neg_pooled,
-            num_inference_steps=steps,
-            guidance_scale=cfg,
-            eta=eta,
-            generator=generator,
-            height=height,
-            width=width,
-            image=resized_image,
-            original_size=(resized_image.height, resized_image.width),
-            target_size=(height, width),
-            strength=hires_strength
-        ).images[0]
-    else:
-        print("No need for high-res refinement")
-        high_res_image = gen_image
-
-    # Save metadata including hires_strength
+    high_res_image = img2img_pipe(
+        prompt_embeds=conditioning,
+        pooled_prompt_embeds=pooled,
+        negative_prompt_embeds=neg_conditioning,
+        negative_pooled_prompt_embeds=neg_pooled,
+        num_inference_steps=steps,
+        guidance_scale=cfg,
+        eta=eta,
+        generator=generator,
+        height=height,
+        width=width,
+        image=resized_image,
+        original_size=(resized_image.height, resized_image.width),
+        target_size=(height, width),
+        strength=hires_strength
+    ).images[0]
+    
+    # Metadata and saving logic
     metadata = {
         "seed": seed,
         "steps": steps,
@@ -182,21 +180,11 @@ def inference(prompt, negative_prompt="", steps=4, seed=-1, eta=0.3, cfg=0, hire
         "height": height
     }
     
-    # Save image(s)
-    if need_hires_refinement:
-        # Save both low and high-res if refinement was needed
-        high_res_path = f"outputs/TCDXL_high_res_seed-{seed}_steps-{steps}_{crc_hash(repr(metadata))}.{output_format}"
-        save_image_with_geninfo(high_res_image, str(metadata), high_res_path)
-        
-        low_res_path = f"outputs/TCDXL_low_res_seed-{seed}_steps-{steps}_{crc_hash(repr(metadata))}.{output_format}"
-        save_image_with_geninfo(low_res_image, str(metadata), low_res_path)
-    else:
-        # Save only one image if no refinement needed
-        path = f"outputs/TCDXL_seed-{seed}_steps-{steps}_{crc_hash(repr(metadata))}.{output_format}"
-        save_image_with_geninfo(gen_image, str(metadata), path)
-
-    return high_res_image, low_res_image, f"seed: {seed}"
-
+    # Save high-res image
+    high_res_path = f"outputs/TCDXL_high_res_seed-{seed}_steps-{steps}_{crc_hash(repr(metadata))}.{output_format}"
+    save_image_with_geninfo(high_res_image, str(metadata), high_res_path)
+    
+    return high_res_image
 
 # Define style
 title = "<h1>Trajectory Consistency Distillation (SDXL)</h1>"
@@ -305,7 +293,7 @@ with gr.Blocks(css=css) as demo:
                 clear = gr.ClearButton(
                     components=[prompt, negative_prompt, steps, seed, eta, cfg])
                 submit = gr.Button(value='Submit')
-
+    
             examples = gr.Examples(
                 label="Quick Examples",
                 examples=examples,
@@ -321,10 +309,15 @@ with gr.Blocks(css=css) as demo:
 
     gr.Markdown(f'{article}')
 
+    seed_state = gr.State()
     submit.click(
-        fn=inference,
-        inputs=[prompt, negative_prompt, steps, seed, eta, cfg, hires_strength, width, height, preImage],
-        outputs=[genImage, preImage, seedTxt],
+        fn=first_pass_inference,
+        inputs=[prompt, negative_prompt, steps, seed, eta, cfg, width, height, preImage],
+        outputs=[genImage, seed_state]
+    ).then(
+        fn=high_res_inference,
+        inputs=[genImage, prompt, negative_prompt, steps, seed_state, eta, cfg, hires_strength, width, height],
+        outputs=[genImage]
     )
     randButton.click(fn=lambda: gr.Number(label="Random Seed", value=-1), show_progress=False, outputs=[seed])
     luckyButton.click(fn=lambda: gr.Number(label="Random Seed", value=newSeed()), show_progress=False, outputs=[seed])
